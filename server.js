@@ -3,7 +3,7 @@ import fs from "fs";
 import path from "path";
 import cors from "cors";
 
-const app = express();
+const app = express(express.json());
 const PORT = 4000;
 
 // Allow frontend from anywhere (you can lock this down later)
@@ -76,6 +76,9 @@ app.get("/image/:filename", (req, res) => {
   }
 });
 
+app.get("/",(req,res)=>{
+    res.send("Server is running")
+})
 app.listen(PORT, () => {
   console.log(`Server running at http://localhost:${PORT}`);
 });
